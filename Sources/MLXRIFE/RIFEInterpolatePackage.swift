@@ -1,5 +1,6 @@
 import Foundation
 import CoreVideo
+import FormatBridge
 import MLXToolKit
 import MLX
 import Hub
@@ -86,31 +87,49 @@ public final class RIFEInterpolatePackage: ModelPackage {
         }
 
         let scale = configuration.scale
-        let result = try await InterpolatingVideoIO.interpolate(
-            input: inURL, output: outURL, factor: factor
-        ) { prev, next in
-            try Task.checkCancellation()
-            guard let a = Self.rgbNHWC(prev), let b = Self.rgbNHWC(next) else {
-                throw RIFEPackageError.frameConversionFailed
-            }
-            var mids: [CVPixelBuffer] = []
-            for k in 1..<factor {
-                let t = Float(k) / Float(factor)
-                let mid = model.inference(img0: a, img1: b, timestep: t, scale: scale)
-                MLX.eval(mid)
-                guard let pb = Self.pixelBuffer(fromRGBNHWC: mid,
-                                                width: mid.shape[2], height: mid.shape[1]) else {
+
+        // Layer-2 media service (format-bridge): tier-agnostic decode (native via VideoToolbox,
+        // WebM/MKV/VP9/AV1… in software) → pairwise 1:factor insertion → HEVC/BT.709 at factor×
+        // the source fps. The probe runs up front because uniform re-timing needs the target
+        // fps before the stream starts.
+        let info = try await FormatBridgeFactory.makeProbe().probe(url: inURL)
+        guard let stream = info.videoStreams.first else {
+            throw RIFEPackageError.frameConversionFailed
+        }
+        let outFPS = max(stream.frameRate, 1) * Double(factor)
+
+        final class Window: @unchecked Sendable { var prev: CVPixelBuffer? }
+        let win = Window()
+
+        let result = try await FrameStreamTransform.run(
+            input: inURL, output: outURL, timing: .uniform(fps: outFPS),
+            transform: { frame in
+                try Task.checkCancellation()
+                defer { win.prev = frame }
+                guard let p = win.prev else { return [] }   // prime the pairwise window
+                guard let a = Self.rgbNHWC(p), let b = Self.rgbNHWC(frame) else {
                     throw RIFEPackageError.frameConversionFailed
                 }
-                mids.append(pb)
-            }
-            return mids
-        }
+                var outs: [CVPixelBuffer] = [p]
+                for k in 1..<factor {
+                    let t = Float(k) / Float(factor)
+                    let mid = model.inference(img0: a, img1: b, timestep: t, scale: scale)
+                    MLX.eval(mid)
+                    guard let pb = Self.pixelBuffer(fromRGBNHWC: mid,
+                                                    width: mid.shape[2], height: mid.shape[1]) else {
+                        throw RIFEPackageError.frameConversionFailed
+                    }
+                    outs.append(pb)
+                }
+                return outs
+            },
+            flush: { win.prev.map { [$0] } ?? [] }
+        )
 
         let data = try Data(contentsOf: outURL)
         return FrameInterpolateResponse(
             video: Video(format: .mp4, data: data,
-                         durationSeconds: result.duration, frameRate: result.frameRate),
+                         durationSeconds: result.sourceDuration, frameRate: outFPS),
             appliedFactor: factor)
     }
 
