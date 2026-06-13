@@ -1,6 +1,6 @@
 import Foundation
 import CoreVideo
-import FormatBridge
+import FrameStreamNative
 import MLXToolKit
 import MLX
 import Hub
@@ -88,20 +88,17 @@ public final class RIFEInterpolatePackage: ModelPackage {
 
         let scale = configuration.scale
 
-        // Layer-2 media service (format-bridge): tier-agnostic decode (native via VideoToolbox,
-        // WebM/MKV/VP9/AV1… in software) → pairwise 1:factor insertion → HEVC/BT.709 at factor×
-        // the source fps. The probe runs up front because uniform re-timing needs the target
-        // fps before the stream starts.
-        let info = try await FormatBridgeFactory.makeProbe().probe(url: inURL)
-        guard let stream = info.videoStreams.first else {
-            throw RIFEPackageError.frameConversionFailed
-        }
-        let outFPS = max(stream.frameRate, 1) * Double(factor)
+        // Native AVFoundation media seam (frame-stream-native): decode → pairwise 1:factor
+        // insertion → HEVC/BT.709 at factor× the source fps. Input is a native container
+        // (mp4/mov/m4v) — non-native sources are normalized upstream by format-bridge. The probe
+        // runs up front because uniform re-timing needs the target fps before the stream starts.
+        let info = try await NativeFrameStream.probe(url: inURL)
+        let outFPS = max(info.frameRate, 1) * Double(factor)
 
         final class Window: @unchecked Sendable { var prev: CVPixelBuffer? }
         let win = Window()
 
-        let result = try await FrameStreamTransform.run(
+        let result = try await NativeFrameStream.run(
             input: inURL, output: outURL, timing: .uniform(fps: outFPS),
             transform: { frame in
                 try Task.checkCancellation()

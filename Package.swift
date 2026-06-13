@@ -15,7 +15,7 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/xocialize/mlx-engine-swift", from: "0.3.0"),
-        .package(path: "../format-bridge"),
+        .package(url: "https://github.com/xocialize/frame-stream-native.git", from: "0.1.0"),
         .package(url: "https://github.com/xocialize/rife-mlx-swift.git", from: "0.1.0"),
         .package(url: "https://github.com/ml-explore/mlx-swift.git", from: "0.30.0"),
         .package(url: "https://github.com/huggingface/swift-transformers", from: "1.1.6"),
@@ -25,7 +25,7 @@ let package = Package(
             name: "MLXRIFE",
             dependencies: [
                 .product(name: "MLXToolKit", package: "mlx-engine-swift"),
-                .product(name: "FormatBridge", package: "format-bridge"),
+                .product(name: "FrameStreamNative", package: "frame-stream-native"),
                 .product(name: "RIFEMLX", package: "rife-mlx-swift"),
                 .product(name: "MLX", package: "mlx-swift"),
                 .product(name: "Hub", package: "swift-transformers"),
@@ -37,7 +37,7 @@ let package = Package(
             dependencies: [
                 "MLXRIFE",
                 .product(name: "MLXToolKit", package: "mlx-engine-swift"),
-                .product(name: "FormatBridge", package: "format-bridge"),
+                .product(name: "FrameStreamNative", package: "frame-stream-native"),
                 .product(name: "MLXServeCore", package: "mlx-engine-swift"),
             ]
         ),
