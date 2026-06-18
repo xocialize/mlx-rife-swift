@@ -56,7 +56,9 @@ public final class RIFEInterpolatePackage: ModelPackage {
         guard model == nil else { return }
         let hub = configuration.modelsRootDirectory.map { HubApi(downloadBase: $0) } ?? HubApi()
         let dir = try await hub.snapshot(from: Hub.Repo(id: configuration.repo),
-                                         matching: ["model.safetensors"])
+                                         matching: ["model.safetensors"]) { progress, speed in
+            WeightDownloadProgress.report(fraction: progress.fractionCompleted, bytesPerSecond: speed)
+        }
         let m = RIFEModel()
         try m.loadWeights(from: dir.appendingPathComponent("model.safetensors"))
         model = m

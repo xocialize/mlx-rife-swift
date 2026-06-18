@@ -14,7 +14,7 @@ let package = Package(
         .library(name: "MLXRIFE", targets: ["MLXRIFE"]),
     ],
     dependencies: [
-        .package(url: "https://github.com/xocialize/mlx-engine-swift", from: "0.3.0"),
+        .package(url: "https://github.com/xocialize/mlx-engine-swift", from: "0.8.0"),
         .package(url: "https://github.com/xocialize/frame-stream-native.git", from: "0.1.0"),
         .package(url: "https://github.com/xocialize/rife-mlx-swift.git", from: "0.1.0"),
         .package(url: "https://github.com/ml-explore/mlx-swift.git", from: "0.30.0"),
