@@ -2,6 +2,7 @@ import Foundation
 import CoreVideo
 import FrameStreamNative
 import MLXToolKit
+import MLXProfiling
 import MLX
 import Hub
 import RIFEMLX
@@ -109,14 +110,19 @@ public final class RIFEInterpolatePackage: ModelPackage {
         let info = try await NativeFrameStream.probe(url: inURL)
         let outFPS = max(info.frameRate, 1) * Double(factor)
 
-        final class Window: @unchecked Sendable { var prev: CVPixelBuffer? }
+        final class Window: @unchecked Sendable { var prev: CVPixelBuffer?; var pair = 0 }
         let win = Window()
 
+        // Per-intermediate MLX inference is profiled (MLX_PROFILE=1). RIFE's activation is
+        // resolution-linear (no tiling) — the region's phys/⚠PAGING readings flag when a high-res
+        // input approaches the Metal working-set ceiling (the pre-4K-tiling admission signal).
+        let prof = MLXProfiler.shared
+        prof.beginRun("rife frameInterpolate factor=\(factor)")
         let result = try await NativeFrameStream.run(
             input: inURL, output: outURL, timing: .uniform(fps: outFPS),
             transform: { frame in
                 try Task.checkCancellation()
-                defer { win.prev = frame }
+                defer { win.prev = frame; win.pair += 1 }
                 guard let p = win.prev else { return [] }   // prime the pairwise window
                 guard let a = Self.rgbNHWC(p), let b = Self.rgbNHWC(frame) else {
                     throw RIFEPackageError.frameConversionFailed
@@ -124,8 +130,11 @@ public final class RIFEInterpolatePackage: ModelPackage {
                 var outs: [CVPixelBuffer] = [p]
                 for k in 1..<factor {
                     let t = Float(k) / Float(factor)
-                    let mid = model.inference(img0: a, img1: b, timestep: t, scale: scale)
-                    MLX.eval(mid)
+                    let mid = prof.region("interp", "mid", index: win.pair, note: "t=\(t)") { () -> MLXArray in
+                        let m = model.inference(img0: a, img1: b, timestep: t, scale: scale)
+                        MLX.eval(m)   // eval INSIDE the region so the lazy compute is timed honestly
+                        return m
+                    }
                     guard let pb = Self.pixelBuffer(fromRGBNHWC: mid,
                                                     width: mid.shape[2], height: mid.shape[1]) else {
                         throw RIFEPackageError.frameConversionFailed
@@ -136,6 +145,7 @@ public final class RIFEInterpolatePackage: ModelPackage {
             },
             flush: { win.prev.map { [$0] } ?? [] }
         )
+        prof.endRun(denominators: ["pair": Double(max(win.pair, 1))])
 
         let data = try Data(contentsOf: outURL)
         return FrameInterpolateResponse(
