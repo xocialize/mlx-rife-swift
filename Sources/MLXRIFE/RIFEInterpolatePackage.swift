@@ -29,8 +29,12 @@ public final class RIFEInterpolatePackage: ModelPackage {
             license: LicenseDeclaration(weightLicense: .mit, portCodeLicense: .mit),
             provenance: Provenance(sourceRepo: "mlx-community/RIFE-4.25", revision: "main", tier: 1),
             requirements: RequirementsManifest(
-                // ~21 MB fp32 weights; the working set is the per-pair pyramid activations.
-                footprints: [QuantFootprint(quant: .fp32, residentBytes: 1_500_000_000)],
+                // Split (born-clean): ~21 MB fp32 weights resident (declare 150 MB with overhead);
+                // the per-pair pyramid activations are the transient (~1.5 GB est, resolution-driven —
+                // the old flat 1.5 GB mislabeled that activation as resident). fp32-only single-component,
+                // so BudgetAware / per-stage-evict are N/A. Activation = est, in-app phys re-baseline pending.
+                footprints: [QuantFootprint(quant: .fp32, residentBytes: 150_000_000,
+                                            peakActivationBytes: 1_500_000_000)],
                 requiredBackends: [.metalGPU],
                 os: OSRequirement(minMacOS: SemanticVersion(major: 26, minor: 0, patch: 0)),
                 chipFloor: nil
@@ -66,6 +70,9 @@ public final class RIFEInterpolatePackage: ModelPackage {
 
     public func unload() async {
         model = nil
+        // Dropping the ref alone leaves weight/activation buffers in MLX's pool, so phys_footprint
+        // doesn't fall and engine.evict / R-MEM-1 can't reclaim — flush the pool.
+        MLX.Memory.clearCache()
     }
 
     public func run(_ request: any CapabilityRequest) async throws -> any CapabilityResponse {
