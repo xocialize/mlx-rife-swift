@@ -29,12 +29,17 @@ public final class RIFEInterpolatePackage: ModelPackage {
             license: LicenseDeclaration(weightLicense: .mit, portCodeLicense: .mit),
             provenance: Provenance(sourceRepo: "mlx-community/RIFE-4.25", revision: "main", tier: 1),
             requirements: RequirementsManifest(
-                // Split (born-clean): ~21 MB fp32 weights resident (declare 150 MB with overhead);
-                // the per-pair pyramid activations are the transient (~1.5 GB est, resolution-driven —
-                // the old flat 1.5 GB mislabeled that activation as resident). fp32-only single-component,
-                // so BudgetAware / per-stage-evict are N/A. Activation = est, in-app phys re-baseline pending.
+                // Split (born-clean): ~21 MB fp32 weights resident (declare 150 MB with overhead).
+                // The per-pair pyramid activation is the transient and is RESOLUTION-LINEAR (RIFE has
+                // no tiling — the whole frame is resident through the pyramid). RE-BASELINED 2026-07-01
+                // against REAL phys_footprint (HostMemory) on the video path, factor 2: resident floor
+                // 0.04 GB; peak activation 0.77 GB @360p, 2.37 GB @720p, 3.86 GB @1080p. Declared for a
+                // 1080p max input (4.0 GB). Factor-independent (each intermediate evals separately).
+                // NOTE: 4K would extrapolate to ~15 GB and exceed most Macs' GPU working set — RIFE
+                // needs a tiling pass (like SeedVR2's MLXTileProcessor) before 4K is admissible; tracked
+                // as a separate enhancement. Old declared 1.5 GB was safe only to ~540p.
                 footprints: [QuantFootprint(quant: .fp32, residentBytes: 150_000_000,
-                                            peakActivationBytes: 1_500_000_000)],
+                                            peakActivationBytes: 4_000_000_000)],
                 requiredBackends: [.metalGPU],
                 os: OSRequirement(minMacOS: SemanticVersion(major: 26, minor: 0, patch: 0)),
                 chipFloor: nil
