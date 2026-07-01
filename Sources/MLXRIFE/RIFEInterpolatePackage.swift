@@ -31,14 +31,20 @@ public final class RIFEInterpolatePackage: ModelPackage {
             provenance: Provenance(sourceRepo: "mlx-community/RIFE-4.25", revision: "main", tier: 1),
             requirements: RequirementsManifest(
                 // Split (born-clean): ~21 MB fp32 weights resident (declare 150 MB with overhead).
-                // The per-pair pyramid activation is the transient and is RESOLUTION-LINEAR (RIFE has
-                // no tiling — the whole frame is resident through the pyramid). RE-BASELINED 2026-07-01
-                // against REAL phys_footprint (HostMemory) on the video path, factor 2: resident floor
-                // 0.04 GB; peak activation 0.77 GB @360p, 2.37 GB @720p, 3.86 GB @1080p. Declared for a
-                // 1080p max input (4.0 GB). Factor-independent (each intermediate evals separately).
-                // NOTE: 4K would extrapolate to ~15 GB and exceed most Macs' GPU working set — RIFE
-                // needs a tiling pass (like SeedVR2's MLXTileProcessor) before 4K is admissible; tracked
-                // as a separate enhancement. Old declared 1.5 GB was safe only to ~540p.
+                // The per-pair pyramid activation is the transient. RE-BASELINED 2026-07-01 against
+                // REAL phys_footprint (HostMemory) on the video path, factor 2: resident floor 0.04 GB;
+                // peak activation 0.77 GB @360p, 2.37 GB @720p, 3.86 GB @1080p. Whole-frame activation is
+                // RESOLUTION-LINEAR (~1.86 GB/Mpx), so 4K would extrapolate to ~15 GB.
+                // TILING (2026-07-01, RIFEPairTiler + tileThresholdPixels): above 1080p the interpolate
+                // path tiles BOTH frames into ≤1080p co-located tiles that eval independently, so peak
+                // activation becomes a function of TILE size, not frame size — resolution-INDEPENDENT,
+                // like SeedVR2. VALIDATED 2026-07-01 (BRIDGE-VID-003, RIFESeamEval on real 4K):
+                // default 1024/128 tiling measured 3.02 GB phys at true 3840×2160 (vs 13.67 GB
+                // whole-frame ref) — under the declared 4.0 GB at ANY input resolution incl. 4K.
+                // Seam quality: tiled vs whole-frame is SSIM 0.995 / VMAF ≥95.9 even on fast motion
+                // (overlap=128 is the knee; 256 adds only +0.1 VMAF). ≤1080p is unchanged
+                // (whole-frame). Factor-independent (each intermediate evals separately). See
+                // docs/tiled-interpolation-design.md §9.
                 footprints: [QuantFootprint(quant: .fp32, residentBytes: 150_000_000,
                                             peakActivationBytes: 4_000_000_000)],
                 requiredBackends: [.metalGPU],
@@ -127,11 +133,29 @@ public final class RIFEInterpolatePackage: ModelPackage {
                 guard let a = Self.rgbNHWC(p), let b = Self.rgbNHWC(frame) else {
                     throw RIFEPackageError.frameConversionFailed
                 }
+                // Above the configured pixel threshold, bound peak activation with the pair-tiler
+                // (RIFE is otherwise resolution-linear and OOMs at 4K). The ≤1080p whole-frame
+                // path is byte-for-byte unchanged, preserving parity.
+                let tileThreshold = self.configuration.tileThresholdPixels
+                let tileSize = self.configuration.tileSize
+                let tileOverlap = self.configuration.tileOverlap
+                let doTile = tileThreshold > 0 && a.shape[1] * a.shape[2] > tileThreshold
+
                 var outs: [CVPixelBuffer] = [p]
                 for k in 1..<factor {
                     let t = Float(k) / Float(factor)
                     let mid = prof.region("interp", "mid", index: win.pair, note: "t=\(t)") { () -> MLXArray in
-                        let m = model.inference(img0: a, img1: b, timestep: t, scale: scale)
+                        let m: MLXArray
+                        if doTile {
+                            let tiler = RIFEPairTiler(tileSize: tileSize, overlap: tileOverlap)
+                            m = tiler.interpolate(img0: a, img1: b) { ta, tb in
+                                let r = model.inference(img0: ta, img1: tb, timestep: t, scale: scale)
+                                MLX.eval(r)   // eval per tile → pool frees before the next tile
+                                return r
+                            }
+                        } else {
+                            m = model.inference(img0: a, img1: b, timestep: t, scale: scale)
+                        }
                         MLX.eval(m)   // eval INSIDE the region so the lazy compute is timed honestly
                         return m
                     }

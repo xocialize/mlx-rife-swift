@@ -13,6 +13,7 @@ let package = Package(
     products: [
         .library(name: "RIFEMLX", targets: ["RIFEMLX"]),
         .library(name: "MLXRIFE", targets: ["MLXRIFE"]),
+        .executable(name: "RIFESeamEval", targets: ["RIFESeamEval"]),
     ],
     dependencies: [
         .package(url: "https://github.com/xocialize/mlx-engine-swift", from: "0.17.0"),
@@ -40,6 +41,17 @@ let package = Package(
                 .product(name: "Hub", package: "swift-transformers"),
             ],
             swiftSettings: [.swiftLanguageMode(.v5)]
+        ),
+        // BRIDGE-VID-003 seam-artifact / 4K memory harness. Executable (NOT a testTarget) so it
+        // runs real Metal GPU inference — the `swift test` host lacks the metallib; executables
+        // (like the WAN/LTX RunVACE/RunTI2V5B pattern) resolve the mlx-swift metallib bundle.
+        .executableTarget(
+            name: "RIFESeamEval",
+            dependencies: [
+                "RIFEMLX",
+                "MLXRIFE",
+                .product(name: "MLX", package: "mlx-swift"),
+            ]
         ),
         .testTarget(
             name: "RIFEMLXTests",
